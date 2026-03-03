@@ -674,7 +674,6 @@ a.plink:hover{color:var(--cyan);border-bottom-color:var(--cyan);text-shadow:0 0 
     <button onclick="showPage('rules',this);closeDrawer()">Rules</button>
   </div>
 </div>
-</header>
 
 <main>
 
@@ -977,8 +976,12 @@ a.plink:hover{color:var(--cyan);border-bottom-color:var(--cyan);text-shadow:0 0 
 // ============================================================
 //  CONFIG
 // ============================================================
-const SHEET_ID   = '1nU9AMw5kLTJU5a9S1NGqZRBFefavKnnzjyIPsR6QRrA';
-const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzIra9S6du9wTX2IADni7ygZ8F0t8rTp1tn/exec';
+// ── STANDALONE CONFIG ────────────────────────────────────────────────────────
+// 1. Go to script.google.com → New project
+// 2. Paste FantasyLeague_Standalone_AppScript.js
+// 3. Deploy → Web app → Execute as Me → Anyone → copy /exec URL
+// 4. Paste that URL below, then push index.html to GitHub
+const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbz5M9IM64-5qo-I28ZXfx8chBM0MoOzMtLjcAUajcqtgPNtlwtgJgsrAZhBquA3bxY9/exec;
 
 // ============================================================
 //  8-BIT BACKGROUND — improved disc golfer figures & baskets
@@ -1142,7 +1145,7 @@ function plink(name){const id=PDGA_IDS[name];return id?`<a class="plink" href="h
 //  TOURNAMENT SCHEDULE (confirmed DGPT dates)
 // ============================================================
 const TOURNAMENTS=[
-  {key:"supreme-flight-open",    name:"Supreme Flight Open",        loc:"Brooksville, FL",     type:"regular",   start:"2026-02-27",end:"2026-03-01",  mult:"1x",    pdgaId:97054},
+  {key:"supreme-flight-open",    name:"Supreme Flight Open",        loc:"Brooksville, FL",     type:"regular",   start:"2026-02-27",end:"2026-03-01",  mult:"1x",    pdgaId:96401},
   {key:"big-easy-open",          name:"Big Easy Open",              loc:"Jefferson Parish, LA",type:"regular",   start:"2026-03-13",end:"2026-03-15",  mult:"1x",    pdgaId:97055},
   {key:"queen-city-classic",     name:"Queen City Classic",         loc:"Charlotte, NC",       type:"regular",   start:"2026-03-27",end:"2026-03-29",  mult:"1x",    pdgaId:97056},
   {key:"pdga-champions-cup",     name:"PDGA Champions Cup",         loc:"Lynchburg, VA",       type:"major",     start:"2026-04-09",end:"2026-04-12",  mult:"1.5x",  pdgaId:97336},
@@ -1266,8 +1269,8 @@ const FPO_POOL=[{rank:1,name:"Kristin Lätt"},{rank:2,name:"Silva Saarinen"},{ra
 // ============================================================
 let ROSTERS=JSON.parse(JSON.stringify(BASE_ROSTERS));
 let pendingAdd=null,currentDiv='MPO';
-function getTxnLog(){try{return JSON.parse(localStorage.getItem('dg_txn_log')||'[]');}catch(e){return[];}}
-function saveTxnLog(l){localStorage.setItem('dg_txn_log',JSON.stringify(l));}
+function getTxnLog(){try{return JSON.parse(localStorage.getItem('dg_txn_log_v14')||'[]');}catch(e){return[];}}
+function saveTxnLog(l){localStorage.setItem('dg_txn_log_v14',JSON.stringify(l));}
 function getTeamTxnCount(t){return getTxnLog().filter(x=>x.team===t).length;}
 function getTxnCost(t){return(getTeamTxnCount(t)+1)*10;}
 
@@ -1276,49 +1279,160 @@ function getTxnCost(t){return(getTeamTxnCount(t)+1)*10;}
 //  On every load: render cached data instantly, then fetch
 //  authoritative rosters from the Apps Script and overwrite.
 // ============================================================
+// ============================================================
+//  DATA LOADING — Apps Script is the only source of truth.
+//  GET ?action=getData  returns {status, fetchedAt, rosters, results}
+//  No Google Sheets. No CORS errors. No gviz/tq.
+// ============================================================
+let _liveData = null;
+
 function loadState(){
-  ROSTERS=JSON.parse(JSON.stringify(BASE_ROSTERS));
-  const cached=localStorage.getItem('dg_rosters_v7');
-  if(cached)try{ROSTERS=JSON.parse(cached);}catch(e){}
-  loadRostersFromSheet();
+  ROSTERS = JSON.parse(JSON.stringify(BASE_ROSTERS));
+  const cachedR = localStorage.getItem('dg_rosters_v14');
+  if(cachedR) try{ ROSTERS = JSON.parse(cachedR); }catch(e){}
+  const cachedL = localStorage.getItem('dg_live_v14');
+  if(cachedL) try{
+    _liveData = JSON.parse(cachedL);
+    _applyLiveData(_liveData);
+  }catch(e){}
+  fetchFromAppsScript();
 }
+
 function saveRostersLocal(){
-  localStorage.setItem('dg_rosters_v7',JSON.stringify(ROSTERS));
+  localStorage.setItem('dg_rosters_v14', JSON.stringify(ROSTERS));
 }
-async function loadRostersFromSheet(){
+
+async function fetchFromAppsScript(){
+  showLastUpdated('fetching');
   try{
-    const res=await fetch(WEBAPP_URL+'?action=getRosters');
-    const data=await res.json();
-    if(data.status==='ok'&&data.rosters){
-      const total=Object.values(data.rosters).reduce((s,t)=>s+t.length,0);
-      if(total>0){
-        ROSTERS=data.rosters;
-        saveRostersLocal();
-        renderRoster();
-      }
+    const res = await fetch(WEBAPP_URL + '?action=getData', {cache:'no-store'});
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if(data.status !== 'ok') throw new Error(data.message || 'bad status');
+    _liveData = data;
+    localStorage.setItem('dg_live_v14', JSON.stringify(data));
+    if(data.rosters){
+      const total = Object.values(data.rosters).reduce((s,t)=>s+t.length, 0);
+      if(total > 0){ ROSTERS = data.rosters; saveRostersLocal(); }
     }
-    if(data.lastUpdate)showLastUpdated(data.lastUpdate);
-  }catch(e){
-    console.log('Roster sheet fetch failed — using cached data');
+    _applyLiveData(data);
+    showLastUpdated(data.fetchedAt || new Date().toISOString());
+  }catch(err){
+    console.warn('Apps Script fetch failed:', err.message);
+    showLastUpdated('error');
+    _applyLiveData(_liveData);
   }
 }
+
+// ── Data transformation helpers ──────────────────────────────
+// _FPTS = uses FANTASY_PTS already defined below in renderLineupProjector
+const _MULT = {regular:1, elitePlus:1.25, major:1.5, playoff:1.25};
+
+function _team(name){
+  const n = name.toLowerCase();
+  for(const tn in ROSTERS)
+    if(ROSTERS[tn].some(p=>(p.name||p).toLowerCase()===n)) return tn;
+  return '—';
+}
+
+// Build the [{Tournament, Division, Player, Place, Team, Base Pts, Final Pts, Type, Multiplier}]
+// row format that existing render functions (renderStandings, renderPlayers, renderResults) expect
+function _buildResultRows(results){
+  const rows=[];
+  (results||[]).forEach(tr=>{
+    const t=TOURNAMENTS.find(x=>x.key===tr.key)||{type:'regular',mult:'1x'};
+    const typeLabel={regular:'Regular Elite',elitePlus:'Elite+',major:'Major',playoff:'Playoff'}[tr.type]||'Regular Elite';
+    const mult=_MULT[tr.type]||1;
+    const add=(arr,div)=>(arr||[]).forEach(r=>{
+      if(!r.name||r.place>10) return;
+      const base=FANTASY_PTS[r.place]||0;
+      rows.push({'Tournament':tr.name,'Division':div,'Player':r.name,'Place':r.place,
+        'Team':_team(r.name),'Base Pts':base,'Final Pts':Math.round(base*mult*2)/2,
+        'Type':typeLabel,'Multiplier':mult+'x'});
+    });
+    add(tr.mpo,'MPO'); add(tr.fpo,'FPO');
+  });
+  return rows;
+}
+
+function _buildStandingsRows(resultRows){
+  const totals={'Team Rick':0,'Team Joe':0,'Team Rory':0};
+  resultRows.forEach(r=>{ if(totals[r['Team']]!==undefined) totals[r['Team']]+=r['Final Pts']||0; });
+  return Object.entries(totals).map(([Team,pts])=>({'Team':Team,'Total Points':pts}));
+}
+
+function _buildPlayerRows(resultRows){
+  const byP={};
+  resultRows.forEach(r=>{
+    const nm=r['Player']; if(!nm) return;
+    if(!byP[nm]) byP[nm]={'Player':nm,'Player Name':nm,'Team':r['Team'],'Total Points':0,'C1X%':null,'C2%':null,'Fairway%':null,'Scramble%':null};
+    byP[nm]['Total Points']+=r['Final Pts']||0;
+  });
+  return Object.values(byP);
+}
+
+function _buildBestWeekRows(results){
+  const best={'Team Rick':null,'Team Joe':null,'Team Rory':null};
+  (results||[]).forEach(tr=>{
+    const mult=_MULT[tr.type]||1;
+    const tpts={'Team Rick':0,'Team Joe':0,'Team Rory':0};
+    [...(tr.mpo||[]),...(tr.fpo||[])].forEach(r=>{
+      if(r.place>10) return;
+      const tn=_team(r.name);
+      if(tpts[tn]!==undefined) tpts[tn]+=Math.round((FANTASY_PTS[r.place]||0)*mult*2)/2;
+    });
+    for(const tm in best)
+      if(!best[tm]||tpts[tm]>best[tm].pts) best[tm]={event:tr.name,pts:tpts[tm]};
+  });
+  return Object.entries(best).map(([Team,v])=>({'Team':Team,'Best Week Event':v?v.event:null,'Best Week Points':v?v.pts:null,'Date':null}));
+}
+
+function _applyLiveData(data){
+  if(!data) return;
+  const rr=_buildResultRows(data.results||[]);
+  const sr=_buildStandingsRows(rr);
+  const pr=_buildPlayerRows(rr);
+  const bw=_buildBestWeekRows(data.results||[]);
+  _streaks=computeStreaks(rr);
+  renderStandings(sr, pr);
+  renderPlayers(pr);
+  renderResults(rr);
+  renderBestWeek(bw);
+  renderRoster();
+  const projWrap=document.getElementById('lineup-projector-wrap');
+  if(projWrap) renderLineupProjector(projWrap, rr, getNextEvent());
+  _lastSheetData={standings:sr, players:pr, results:rr, bestWeek:bw, playerField:[]};
+}
+
 function showLastUpdated(timeStr){
   const bar=document.getElementById('last-updated-bar');
   const txt=document.getElementById('lu-text');
   const dot=bar&&bar.querySelector('.lu-dot');
   if(!bar||!txt)return;
   bar.style.display='flex';
+  if(timeStr==='fetching'){
+    txt.textContent='Fetching live data...';
+    if(dot){dot.className='lu-dot';dot.style.animation='pulse 0.7s ease infinite';}
+    return;
+  }
+  if(timeStr==='error'){
+    txt.textContent='Live fetch failed — using cached data';
+    if(dot){dot.className='lu-dot error';dot.style.animation='none';}
+    return;
+  }
+  if(dot) dot.style.animation='';
   const d=new Date(timeStr);
   const daysSince=isNaN(d)?-1:Math.floor((Date.now()-d)/(1000*60*60*24));
   if(daysSince<0){
     txt.textContent='Last updated: '+timeStr;
     if(dot)dot.className='lu-dot';
   } else if(daysSince>8){
-    txt.textContent='Last updated: '+timeStr+' — '+daysSince+'d ago ⚠ trigger may have stopped';
+    txt.textContent='Last updated '+daysSince+'d ago ⚠ check Apps Script';
     if(dot)dot.className='lu-dot stale';
   } else {
-    const ago=daysSince===0?' (today)':daysSince===1?' (yesterday)':' ('+daysSince+'d ago)';
-    txt.textContent='Last updated: '+timeStr+ago;
+    const mins=Math.floor((Date.now()-d)/60000);
+    const ago=mins<2?' (just now)':mins<60?' ('+mins+'m ago)':daysSince===0?' (today)':daysSince===1?' (yesterday)':' ('+daysSince+'d ago)';
+    txt.textContent='Results last updated'+ago;
     if(dot)dot.className='lu-dot';
   }
 }
@@ -1496,17 +1610,16 @@ function renderNextEvent(){
 async function fetchFieldAttendance(tournament) {
   const wrap = document.getElementById('field-attendance-wrap');
   if (!wrap) return;
-  try {
-    const rows = await fetchSheet('Player Field');
-    const keyword = tournament.name.toLowerCase().split(' ')[0];
-    const relevant = rows.filter(r => {
+  const fields = (_liveData && _liveData.playerField) || [];
+  if (fields.length > 0) {
+    const kw = tournament.name.toLowerCase().split(' ')[0];
+    const relevant = fields.filter(r => {
       const ev = (r['Event'] || '').toLowerCase();
-      return ev.includes(keyword) || ev.includes(tournament.name.toLowerCase());
+      return ev.includes(kw) || ev.includes(tournament.name.toLowerCase());
     });
     renderFieldAttendance(wrap, relevant, tournament);
-  } catch(err) {
-    const w = document.getElementById('field-attendance-wrap');
-    if (w) w.innerHTML = `<div class="field-error">📋 Field data not yet available — Apps Script will populate this on its next Monday run. <a href="https://www.pdga.com/tour/event/${tournament.pdgaId}" target="_blank" style="color:var(--cyan)">PDGA.com →</a></div>`;
+  } else {
+    wrap.innerHTML = `<div class="field-error">📋 Field data not yet available. <a href="https://www.pdga.com/tour/event/${tournament.pdgaId}" target="_blank" style="color:var(--cyan)">View on PDGA.com →</a></div>`;
   }
 }
 
@@ -1794,22 +1907,12 @@ function renderSchedule(){
 // ============================================================
 //  GOOGLE SHEETS
 // ============================================================
-function sheetUrl(name){return`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;}
-async function fetchSheet(name){
-  const res=await fetch(sheetUrl(name));
-  const text=await res.text();
-  const json=JSON.parse(text.substring(47).slice(0,-2));
-  const cols=json.table.cols.map(c=>c.label);
-  return json.table.rows.filter(r=>r).map(row=>row.c.reduce((o,c,i)=>{o[cols[i]]=c?c.v:null;return o;},{}));
-}
-async function syncRostersToSheet(){
+// fetchSheet removed — data now comes from Apps Script ?action=getData
+async function fetchSheet(name){ return []; }
+function syncRostersToSheet(){
+  // Standalone mode — rosters are saved locally. No sheet sync needed.
   const msg=document.getElementById('sync-status-msg');
-  msg.innerHTML='<span class="sync-msg sync-pending">⏳ SYNCING...</span>';
-  try{
-    await fetch(WEBAPP_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'updateRosters',rosters:ROSTERS,transactions:getTxnLog()})});
-    msg.innerHTML='<span class="sync-msg sync-ok">✓ SYNCED</span>';
-    setTimeout(()=>{msg.innerHTML='';},4000);
-  }catch(e){msg.innerHTML='<span class="sync-msg sync-error">✗ SYNC FAILED — saved locally</span>';}
+  if(msg){msg.innerHTML='<span class="sync-msg sync-ok">✓ SAVED</span>';setTimeout(()=>{msg.innerHTML='';},3000);}
 }
 
 // ============================================================
@@ -2316,38 +2419,8 @@ function setQuote(text,author){
 //  PLAYER PROFILE MODAL
 // ============================================================
 let _lastSheetData=null;
-async function loadSheetData(){
-  try{
-    const [standings,players,results,bestWeek,playerField]=await Promise.all([
-      fetchSheet('Standings').catch(()=>null),
-      fetchSheet('Player Stats').catch(()=>null),
-      fetchSheet('Results').catch(()=>null),
-      fetchSheet('Best Week').catch(()=>null),
-      fetchSheet('Player Field').catch(()=>null)
-    ]);
-    _lastSheetData={standings,players,results,bestWeek,playerField};
-    _streaks=computeStreaks(results);
-    renderStandings(standings,players);
-    renderPlayers(players);
-    renderResults(results);
-    renderBestWeek(bestWeek);
-    // Refresh Next Event projector + attendance if that page is showing
-    const projWrap=document.getElementById('lineup-projector-wrap');
-    if(projWrap){const t=getNextEvent();renderLineupProjector(projWrap,results,t);}
-    const fieldWrap=document.getElementById('field-attendance-wrap');
-    if(fieldWrap&&playerField){
-      const t=getNextEvent();
-      const kw=t.name.toLowerCase().split(' ')[0];
-      const rel=playerField.filter(r=>{const ev=(r['Event']||'').toLowerCase();return ev.includes(kw)||ev.includes(t.name.toLowerCase());});
-      renderFieldAttendance(fieldWrap,rel,t);
-    }
-  }catch(e){
-    ['standings-content','players-content','results-content'].forEach(id=>{
-      const el=document.getElementById(id);
-      if(el)el.innerHTML='<div class="empty-msg">Could not load data.</div>';
-    });
-  }
-}
+// loadSheetData now fetches from Apps Script
+async function loadSheetData(){ await fetchFromAppsScript(); }
 
 function openPlayerModal(name){
   const overlay=document.getElementById('player-modal-overlay');
@@ -2431,10 +2504,10 @@ loadState();
 renderRoster();
 renderNextEvent();
 renderSchedule();
-loadSheetData();
 loadQuote();
 setInterval(renderNextEvent,60000);
 setInterval(loadQuote,1000*60*60*6);
+setInterval(fetchFromAppsScript,1000*60*30);
 </script>
 </body>
 </html>
